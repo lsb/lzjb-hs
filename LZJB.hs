@@ -5,8 +5,6 @@ import Data.Int (Int8, Int16)
 import Data.Ord (comparing)
 import Data.List (maximumBy, tails)
 import System.Environment (getArgs)
-import Debug.Trace (traceShow)
-import Control.Exception (assert)
 
 -- This is bit-compatible with LZJB, but different algorithms, optimized for legibility and purity.
 
@@ -46,7 +44,7 @@ phraseToBit _ = 0
 
 tokenizeInput :: [Word8] -> [Word8] -> [Token]
 tokenizeInput _      input | null (drop (matchMin-1) input) = map LiteralT input
-tokenizeInput window input = traceShow (window,input) $ assert (not worthEncodingPhrase || w2 > 0) $ (if worthEncodingPhrase then (PhraseT w1 w2) else (LiteralT lit)) : (tokenizeInput nextWindow nextInput)
+tokenizeInput window input = (if worthEncodingPhrase then (PhraseT w1 w2) else (LiteralT lit)) : (tokenizeInput nextWindow nextInput)
   where (matchLength, position) = getLongestMatch window input
         worthEncodingPhrase = matchLength >= matchMin
         finalMatchLength = if worthEncodingPhrase then matchLength else 1
@@ -59,14 +57,14 @@ getLongestMatch :: [Word8] -> [Word8] -> (Int,Int)
 getLongestMatch [] _ = (0,0)
 getLongestMatch window input = maximumBy (comparing fst) matchLengthPositions
   where windowSize = length window
-        matchLengthPositions = [(commonPrefixLength (subWindow ++ (take (matchMax - (length subWindow)) input)) input, length subWindow) | subWindow <- tails window, not (null subWindow)]
+        matchLengthPositions = [(commonPrefixLength (take matchMax (concat $ repeat subWindow)) input, length subWindow) | subWindow <- tails window, not (null subWindow)]
 	commonPrefixLength xs ys = length $ takeWhile id $ zipWith (==) xs ys
 
 serializeMatchLengthPosition :: Int -> Int -> (Word8,Word8)
 serializeMatchLengthPosition matchLength position = (matchLengthBits .|. highPositionBits, lowPositionBits)
   where biasedMatchLength = fromIntegral (matchLength - matchMin)
         matchLengthBits = shift biasedMatchLength (bitsPerByte - matchBits)
-        highPositionBits = shift (fromIntegral position) (0-bitsPerByte)
+        highPositionBits = fromIntegral (shift position (0-bitsPerByte))
         lowPositionBits = (fromIntegral position) :: Word8
 
 
@@ -89,9 +87,10 @@ expandPhrases :: [Word8] -> [Token] -> [Word8]
 expandPhrases _ [] = []
 expandPhrases window (EOF:ts) = error "internal lz error"
 expandPhrases window ((LiteralT w):ts) = w : (expandPhrases ((if length window < windowMax then window else tail window) ++ [w]) ts)
-expandPhrases window ((PhraseT w1 w2):ts) = traceShow ("**********",window,w1,w2) $ phrase ++ (expandPhrases (windowTail ++ phrase) ts)
-  where phrase = take matchLength $ concat $ repeat windowTail
-        windowTail = drop (length window - position) window
+expandPhrases window ((PhraseT w1 w2):ts) = if 0 == position then error "bad zero-length phrase" else phrase ++ (expandPhrases newWindow ts)
+  where windowSize = length window
+        phrase = take matchLength $ concat $ repeat $ drop (windowSize - position) window
+        newWindow = drop (windowSize + matchLength - windowMax) (window ++ phrase)
         (matchLength, position) = deserializeMatchLengthPosition w1 w2
 
 deserializeMatchLengthPosition :: Word8 -> Word8 -> (Int,Int)
@@ -100,6 +99,6 @@ deserializeMatchLengthPosition w1 w2 = (matchLength, position)
         biasedMatchLength = shift w1 (matchBits - bitsPerByte)
         highPositionBits = (bit (bitsPerByte - matchBits) - 1) .&. w1
         lowPositionBits = fromIntegral w2
-        position = fromIntegral (shift highPositionBits bitsPerByte) + lowPositionBits
+        position = (shift (fromIntegral highPositionBits) bitsPerByte) + lowPositionBits
 
 main = getArgs >>= \ args -> interact (map (toEnum . fromIntegral) . (if null args then compress else decompress) . map (fromIntegral . fromEnum) )
